@@ -1,17 +1,21 @@
 #!/bin/bash
 
 # Script to deploy certificate to a Citrix VPX instance
-
+#
 # The following variables exported from environment will be used.
 # If not set then values previously saved in domain.conf file are used.
-
+#
 # All the variables are required
-
+#
 # export CITRIX_VPX_HOSTNAME="vpx.example.com"
 # export CITRIX_VPX_USERNAME="nsroot"
 # export CITRIX_VPX_PASSWORD="nsroot"
-
+#
 # export HTTPS_INSECURE="true" can be used if VPX instance does not use valid ssl certs yet
+#
+# Dependencies:
+# -------------
+# - jq and curl
 
 citrix_vpx_deploy() {
   _cdomain="$1"
@@ -81,7 +85,6 @@ citrix_vpx_deploy() {
   _citrix_vpx_rest POST "/config/systemfile" "$_request" || return $?
   _info "$_cca uploaded to Citrix VPX"
 
-
   _info "Register certificate ca in Citrix VPX"
   _request='{
     "sslcertkey": {
@@ -93,7 +96,13 @@ citrix_vpx_deploy() {
     }
   }'
   _citrix_vpx_rest POST "/config/sslcertkey" "$_request" || return $?
-  _info "Certificate ca $_ca_name created in Citrix VPX"
+  if _contains "$_response" "\"errorcode\": 273"; then
+    _info "CA already registered in Citrix VPX"
+    _ca_name=$(echo "$_response" | jq -r '.message | match("\\[certkeyName.*, (.+)\\]") | .captures[].string')
+    _info "Using existing CA $_ca_name"
+  else
+    _info "Certificate ca $_ca_name created in Citrix VPX"
+  fi
 
 
   _info "Upload certificate chain to Citrix VPX as ${_filename}.pem"
@@ -137,14 +146,16 @@ citrix_vpx_deploy() {
 
   _info "Lookup certificate in Citrix VPX"
   _citrix_vpx_rest GET "/config/sslcertkey/${_name}" "" "false" "\"errorcode\": 0"
-  _res=$?
-
-  if [ "$_res" == "0" ]; then
+  if [ "$_ret" == "0" ]; then
     _info "Certificate $_name found in Citrix VPX"  
+    _details=$(echo "$_response" | jq '.sslcertkey')
+    _info "$_details"
+    _found=1
   else
     _info "Certificate $_name not found in Citrix VPX"
+    _found=0
   fi
-  _found=0
+
 
   if [ "$_found" == "1" ]; then
     _info "Update certificate in Citrix VPX"
@@ -157,6 +168,17 @@ citrix_vpx_deploy() {
     }'
     _citrix_vpx_rest POST "/config/sslcertkey?action=update" "$_request" || return $?
     _info "Certificate $_name updated in Citrix VPX"
+
+
+    _info "Link CA certificate in Citrix VPX"
+    _request='{
+      "sslcertkey": {
+        "certkey": "'$_name'",
+        "linkcertkeyname": "'$_ca_name'",
+      }
+    }'
+    _citrix_vpx_rest POST "/config/sslcertkey?action=link" "$_request" || return $?
+    _info "Certificate $_name linked to $_ca_name in Citrix VPX"
   else
     _info "Register certificate in Citrix VPX"
     _request='{
@@ -206,18 +228,21 @@ _citrix_vpx_rest() {
   fi
 
   if [ "$?" != "0" ]; then
-    _err "Request error"
+    _err "Request error code $_ret"
+    _ret=1
     return 1
   fi
+  _debug response "$response"
   if [ "$expect" != "" ]; then
     if _contains "$response" "$expect"; then
       _info "Response contains $expect"
     else
       _err "Response missing $expect"
-      _debug response "$response"
+      _ret=1
       return 1
     fi
   fi
-  _debug response "$response"
+  _ret=0
+  _response="$response"
   return 0
 }
