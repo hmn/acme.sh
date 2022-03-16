@@ -82,7 +82,7 @@ citrix_vpx_deploy() {
       "fileencoding": "BASE64"
     }
   }'
-  _citrix_vpx_rest POST "/config/systemfile" "$_request" || return $?
+  _citrix_vpx_rest POST "/config/systemfile" "$_request" "" "SKIP" "application/vnd.com.citrix.netscaler.systemfile+json" || return $?
   _info "$_cca uploaded to Citrix VPX"
 
   _info "Register certificate ca in Citrix VPX"
@@ -95,7 +95,7 @@ citrix_vpx_deploy() {
       "notificationperiod": "30"
     }
   }'
-  _citrix_vpx_rest POST "/config/sslcertkey" "$_request" || return $?
+  _citrix_vpx_rest POST "/config/sslcertkey" "$_request" "" "SKIP" || return $?
   if _contains "$_response" "\"errorcode\": 273"; then
     _info "CA already registered in Citrix VPX"
     _ca_name=$(echo "$_response" | jq -r '.message | match("\\[certkeyName.*, (.+)\\]") | .captures[].string')
@@ -114,7 +114,7 @@ citrix_vpx_deploy() {
       "fileencoding": "BASE64"
     }
   }'
-  _citrix_vpx_rest POST "/config/systemfile" "$_request" || return $?
+  _citrix_vpx_rest POST "/config/systemfile" "$_request" "" "SKIP" "application/vnd.com.citrix.netscaler.systemfile+json" || return $?
   _info "$_cfullchain uploaded to Citrix VPX"
 
 
@@ -127,7 +127,7 @@ citrix_vpx_deploy() {
       "fileencoding": "BASE64"
     }
   }'
-  _citrix_vpx_rest POST "/config/systemfile" "$_request" || return $?
+  _citrix_vpx_rest POST "/config/systemfile" "$_request" "" "SKIP" "application/vnd.com.citrix.netscaler.systemfile+json" || return $?
   _info "$_ccert uploaded to Citrix VPX"
 
 
@@ -140,7 +140,7 @@ citrix_vpx_deploy() {
       "fileencoding": "BASE64"
     }
   }'
-  _citrix_vpx_rest POST "/config/systemfile" "$_request" || return $?
+  _citrix_vpx_rest POST "/config/systemfile" "$_request" "" "SKIP" "application/vnd.com.citrix.netscaler.systemfile+json" || return $?
   _info "$_ccert uploaded to Citrix VPX"
 
 
@@ -158,15 +158,26 @@ citrix_vpx_deploy() {
 
 
   if [ "$_found" == "1" ]; then
+    _info "Unlink CA certificate in Citrix VPX"
+    _request='{
+      "sslcertkey": {
+        "certkey": "'$_name'"
+      }
+    }'
+    _citrix_vpx_rest POST "/config/sslcertkey?action=unlink" "$_request" "" "SKIP" || return $?
+    _info "Certificate $_name unlinked in Citrix VPX"
+
+
     _info "Update certificate in Citrix VPX"
     _request='{
       "sslcertkey": {
         "certkey": "'$_name'",
         "cert": "'$_filename'.cer",
         "key": "'$_filename'.key",
+        "nodomaincheck":false
       }
     }'
-    _citrix_vpx_rest POST "/config/sslcertkey?action=update" "$_request" || return $?
+    _citrix_vpx_rest POST "/config/sslcertkey?action=update" "$_request" "" "" || return $?
     _info "Certificate $_name updated in Citrix VPX"
 
 
@@ -174,10 +185,10 @@ citrix_vpx_deploy() {
     _request='{
       "sslcertkey": {
         "certkey": "'$_name'",
-        "linkcertkeyname": "'$_ca_name'",
+        "linkcertkeyname": "'$_ca_name'"
       }
     }'
-    _citrix_vpx_rest POST "/config/sslcertkey?action=link" "$_request" || return $?
+    _citrix_vpx_rest POST "/config/sslcertkey?action=link" "$_request" "" "" || return $?
     _info "Certificate $_name linked to $_ca_name in Citrix VPX"
   else
     _info "Register certificate in Citrix VPX"
@@ -191,9 +202,17 @@ citrix_vpx_deploy() {
         "notificationperiod": "30"
       }
     }'
-    _citrix_vpx_rest POST "/config/sslcertkey" "$_request" || return $?
+    _citrix_vpx_rest POST "/config/sslcertkey" "$_request" "" "" || return $?
     _info "Certificate registred as $_name in Citrix VPX"
   fi
+
+
+  _info "Lookup certificate in Citrix VPX"
+  _citrix_vpx_rest GET "/config/sslcertkey/${_name}" "" "" "\"errorcode\": 0" || return $?
+  _info "Certificate $_name found in Citrix VPX"  
+  _details=$(echo "$_response" | jq '.sslcertkey')
+  _info "$_details"
+
 
   _info "Certificate successfully deployed"
   return 0
@@ -205,11 +224,16 @@ _citrix_vpx_rest() {
   data="$3" # request data or query params
   secure="$4" # handle data as secure when logging
   expect="$5" # response should contain this string
+  contenttype="$6"
+
+  if [ -z "$contenttype" ]; then
+    contenttype="application/json"
+  fi
 
   # configure auth headers for api calls
   export _H1="X-NITRO-USER: $CITRIX_VPX_USERNAME"
   export _H2="X-NITRO-PASS: $CITRIX_VPX_PASSWORD"
-  export _H3="Content-Type: application/json"
+  export _H3="Content-Type: $contenttype"
   NITRO_BASE_URL="https://$CITRIX_VPX_HOSTNAME/nitro/v1"
   if [ "$secure" == "true" ]; then
     _secure_debug data "$data"
@@ -233,7 +257,7 @@ _citrix_vpx_rest() {
     return 1
   fi
   _debug response "$response"
-  if [ "$expect" != "" ]; then
+  if [ "$expect" != "SKIP" ]; then
     if _contains "$response" "$expect"; then
       _info "Response contains $expect"
     else
