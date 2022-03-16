@@ -262,6 +262,7 @@ _citrix_vpx_rest() {
       _info "Response contains $expect"
     else
       _err "Response missing $expect"
+      _err "$response"
       _ret=1
       return 1
     fi
